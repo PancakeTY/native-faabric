@@ -33,7 +33,7 @@ void SystemConfig::initialise()
 
     // Scheduling
     // TODO(planner-scheduler): remove some of this
-    overrideCpuCount = this->getSystemConfIntParam("OVERRIDE_CPU_COUNT", "0");
+    overrideCpuCount = this->getSystemConfIntParam("OVERRIDE_CPU_COUNT", "20");
     overrideFreeCpuStart =
       this->getSystemConfIntParam("OVERRIDE_FREE_CPU_START", "0");
     batchSchedulerMode = getEnvVar("BATCH_SCHEDULER_MODE", "bin-pack");
