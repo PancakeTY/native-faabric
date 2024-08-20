@@ -365,12 +365,21 @@ faabric::batch_scheduler::SchedulingDecision PlannerClient::callFunctions(
     // EXECUTION REQUEST TO PLANNER
     // ------------------------
 
-    faabric::PointToPointMappings response;
-    syncSend(PlannerCalls::CallBatch, req.get(), &response);
+    auto decision = faabric::batch_scheduler::SchedulingDecision(-99, -99);
+    // If NOT_ENOUGH_SLOT_DECISION. We have to resend the request.
+    while (true) {
+        faabric::PointToPointMappings response;
+        syncSend(PlannerCalls::CallBatch, req.get(), &response);
 
-    auto decision =
-      faabric::batch_scheduler::SchedulingDecision::fromPointToPointMappings(
-        response);
+        decision = faabric::batch_scheduler::SchedulingDecision::
+          fromPointToPointMappings(response);
+
+        if (decision.appId == 4294967197 && decision.groupId == -99) {
+            std::this_thread::sleep_for(std::chrono::microseconds(100));
+        } else {
+            break;
+        }
+    }
 
     // The planner decision sets a group id for PTP communication. Make sure we
     // propagate the group id to the messages in the request. The group idx

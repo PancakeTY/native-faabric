@@ -164,7 +164,7 @@ Planner::Planner()
     config.set_hosttimeout(std::stoi(
       faabric::util::getEnvVar("PLANNER_HOST_KEEPALIVE_TIMEOUT", "5")));
     config.set_numthreadshttpserver(
-      std::stoi(faabric::util::getEnvVar("PLANNER_HTTP_SERVER_THREADS", "4")));
+      std::stoi(faabric::util::getEnvVar("PLANNER_HTTP_SERVER_THREADS", "20")));
 
     printConfig();
 }

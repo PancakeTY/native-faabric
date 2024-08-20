@@ -54,7 +54,7 @@ void SystemConfig::initialise()
     endpointHost = getEnvVar("ENDPOINT_HOST", "");
     endpointPort = this->getSystemConfIntParam("ENDPOINT_PORT", "8080");
     endpointNumThreads =
-      this->getSystemConfIntParam("ENDPOINT_NUM_THREADS", "4");
+      this->getSystemConfIntParam("ENDPOINT_NUM_THREADS", "10");
 
     if (endpointHost.empty()) {
         // Get the IP for this host
@@ -64,9 +64,9 @@ void SystemConfig::initialise()
 
     // Transport
     functionServerThreads =
-      this->getSystemConfIntParam("FUNCTION_SERVER_THREADS", "2");
+      this->getSystemConfIntParam("FUNCTION_SERVER_THREADS", "10");
     stateServerThreads =
-      this->getSystemConfIntParam("STATE_SERVER_THREADS", "2");
+      this->getSystemConfIntParam("STATE_SERVER_THREADS", "10");
     snapshotServerThreads =
       this->getSystemConfIntParam("SNAPSHOT_SERVER_THREADS", "2");
     // FIXME: temporarily set this value to a higher number to work-around:
