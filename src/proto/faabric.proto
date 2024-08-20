@@ -149,6 +149,9 @@ message Message {
     // OpenMP
     bool isOmp = 39;
     int32 ompNumThreads = 40;
+
+    // Stream
+    int32 chainedId = 97;
 }
 
 // ---------------------------------------------
