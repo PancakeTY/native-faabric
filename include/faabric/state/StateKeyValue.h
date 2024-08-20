@@ -107,6 +107,7 @@ class StateKeyValue
 
   protected:
     std::shared_mutex valueMutex;
+    std::mutex stateMutex;
 
     size_t valueSize;
     size_t sharedMemSize;

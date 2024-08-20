@@ -34,6 +34,8 @@ StateKeyValue::StateKeyValue(const std::string& userIn,
     if (sizeIn > 0) {
         configureSize();
     }
+
+    reserveStorage();
 }
 
 void StateKeyValue::configureSize()
@@ -581,12 +583,12 @@ void StateKeyValue::unlockRead()
 
 void StateKeyValue::lockWrite()
 {
-    valueMutex.lock();
+    stateMutex.lock();
 }
 
 void StateKeyValue::unlockWrite()
 {
-    valueMutex.unlock();
+    stateMutex.unlock();
 }
 
 std::vector<StateChunk> StateKeyValue::getDirtyChunks(
