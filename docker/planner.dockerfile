@@ -10,7 +10,7 @@ RUN rm -rf /code \
     && mkdir -p /code/faabric \
     && git clone \
         -b v${FAABRIC_VERSION} \
-        https://github.com/faasm/faabric \
+        https://github.com/PancakeTY/native-faabric \
         /code/faabric \
     && cd /code/faabric \
     && ./bin/create_venv.sh \
