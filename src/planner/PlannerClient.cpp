@@ -365,9 +365,10 @@ faabric::batch_scheduler::SchedulingDecision PlannerClient::callFunctions(
     // EXECUTION REQUEST TO PLANNER
     // ------------------------
 
+    int repeat = 0;
     auto decision = faabric::batch_scheduler::SchedulingDecision(-99, -99);
     // If NOT_ENOUGH_SLOT_DECISION. We have to resend the request.
-    while (true) {
+    while (repeat < 10) {
         faabric::PointToPointMappings response;
         syncSend(PlannerCalls::CallBatch, req.get(), &response);
 
@@ -375,10 +376,14 @@ faabric::batch_scheduler::SchedulingDecision PlannerClient::callFunctions(
           fromPointToPointMappings(response);
 
         if (decision.appId == 4294967197 && decision.groupId == -99) {
-            std::this_thread::sleep_for(std::chrono::microseconds(100));
+            std::this_thread::sleep_for(std::chrono::milliseconds(100));
+            repeat++;
         } else {
             break;
         }
+    }
+    if (repeat >= 10) {
+        SPDLOG_ERROR("PlannerClient::callFunctions: NOT_ENOUGH_SLOT_DECISION");
     }
 
     // The planner decision sets a group id for PTP communication. Make sure we
