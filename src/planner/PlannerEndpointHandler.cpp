@@ -260,7 +260,7 @@ void PlannerEndpointHandler::onRequest(
             }
 
             // Execute the BER
-            auto decision = getPlanner().callBatch(ber);
+            auto decision = getPlanner().enqueueRequest(ber, true);
 
             // Handle cases where the scheduling failed
             if (*decision == NOT_ENOUGH_SLOTS_DECISION) {

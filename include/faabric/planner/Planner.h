@@ -5,8 +5,10 @@
 #include <faabric/planner/planner.pb.h>
 #include <faabric/proto/faabric.pb.h>
 #include <faabric/snapshot/SnapshotRegistry.h>
+#include <faabric/util/queue.h>
 
 #include <shared_mutex>
+#include <list>
 
 namespace faabric::planner {
 enum FlushType
@@ -24,6 +26,8 @@ class Planner
 {
   public:
     Planner();
+
+    ~Planner();
 
     // ----------
     // Planner config
@@ -64,6 +68,8 @@ class Planner
 
     void setMessageResult(std::shared_ptr<faabric::Message> msg);
 
+    void releaseMessageHost(std::shared_ptr<faabric::Message> msg);
+
     std::shared_ptr<faabric::Message> getMessageResult(
       std::shared_ptr<faabric::Message> msg);
 
@@ -94,6 +100,9 @@ class Planner
 
     std::map<int32_t, std::shared_ptr<BatchExecuteRequest>> getEvictedReqs();
 
+    std::shared_ptr<faabric::batch_scheduler::SchedulingDecision>
+    enqueueRequest(std::shared_ptr<BatchExecuteRequest> req, bool force);
+
     // Main entrypoint to request the execution of batches
     std::shared_ptr<faabric::batch_scheduler::SchedulingDecision> callBatch(
       std::shared_ptr<BatchExecuteRequest> req);
@@ -111,6 +120,18 @@ class Planner
 
     PlannerState state;
     PlannerConfig config;
+
+    bool stopBatchTimer = false;
+    void scheduleTimerCheck();
+    std::thread scheduleTimerThread;
+
+    faabric::util::ThreadSafeQueue<
+      std::shared_ptr<faabric::BatchExecuteRequest>>
+      unprocessMessageQueue;
+    // MAP<appId, count>
+    std::map<int, int> inFlightChainedCountMap;
+    // MAP<appId, msg>
+    std::map<int, std::list<std::shared_ptr<faabric::Message>>> unsetResultMsgMap;
 
     // Snapshot registry to distribute snapshots in THREADS requests
     faabric::snapshot::SnapshotRegistry& snapshotRegistry;
@@ -139,6 +160,9 @@ class Planner
     void dispatchSchedulingDecision(
       std::shared_ptr<faabric::BatchExecuteRequest> req,
       std::shared_ptr<faabric::batch_scheduler::SchedulingDecision> decision);
+
+    void removeInflightMessage(std::shared_ptr<faabric::Message> msg);
+
 };
 
 Planner& getPlanner();

@@ -263,4 +263,72 @@ class TokenPool
     int _size;
     Queue<int> queue;
 };
+
+template<typename T>
+class ThreadSafeQueue
+{
+  public:
+    ThreadSafeQueue() = default;
+
+    // Disable copy constructor and assignment operator
+    ThreadSafeQueue(const ThreadSafeQueue&) = delete;
+    ThreadSafeQueue& operator=(const ThreadSafeQueue&) = delete;
+
+    // Enqueue an item
+    void enqueue(T item)
+    {
+        std::lock_guard<std::mutex> lock(m_mutex);
+        m_queue.push(std::move(item));
+        m_cond_var.notify_one();
+    }
+
+    // Get the item at the front of the queue without removing it. Blocks if the queue is empty.
+    T front()
+    {
+        std::unique_lock<std::mutex> lock(m_mutex);
+        m_cond_var.wait(lock, [this]() { return !m_queue.empty(); });
+        return m_queue.front();
+    }
+
+    // Dequeue an item, blocks if the queue is empty
+    T dequeue()
+    {
+        std::unique_lock<std::mutex> lock(m_mutex);
+        m_cond_var.wait(lock, [this]() { return !m_queue.empty(); });
+        T item = std::move(m_queue.front());
+        m_queue.pop();
+        return item;
+    }
+
+    // Try to dequeue an item, returns false if the queue is empty
+    bool try_dequeue(T& item)
+    {
+        std::lock_guard<std::mutex> lock(m_mutex);
+        if (m_queue.empty()) {
+            return false;
+        }
+        item = std::move(m_queue.front());
+        m_queue.pop();
+        return true;
+    }
+
+    // Check if the queue is empty
+    bool empty() const
+    {
+        std::lock_guard<std::mutex> lock(m_mutex);
+        return m_queue.empty();
+    }
+
+    // Get the size of the queue
+    size_t size() const
+    {
+        std::lock_guard<std::mutex> lock(m_mutex);
+        return m_queue.size();
+    }
+
+  private:
+    std::queue<T> m_queue;
+    mutable std::mutex m_mutex;
+    std::condition_variable m_cond_var;
+};
 }

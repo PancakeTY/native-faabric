@@ -15,7 +15,9 @@
 #include <faabric/util/locks.h>
 #include <faabric/util/logging.h>
 
+#include <chrono>
 #include <string>
+#include <thread>
 
 // Special group ID magic to indicate MPI decisions that we have preemptively
 // scheduled
@@ -167,6 +169,17 @@ Planner::Planner()
       std::stoi(faabric::util::getEnvVar("PLANNER_HTTP_SERVER_THREADS", "20")));
 
     printConfig();
+
+    scheduleTimerThread = std::thread(&Planner::scheduleTimerCheck, this);
+}
+
+Planner::~Planner()
+{
+    // Stop the batch timer thread
+    stopBatchTimer = true;
+    if (scheduleTimerThread.joinable()) {
+        scheduleTimerThread.join();
+    }
 }
 
 PlannerConfig Planner::getConfig()
@@ -260,6 +273,10 @@ void Planner::flushSchedulingState()
 
     state.evictedRequests.clear();
     state.nextEvictedHostIps.clear();
+
+    unprocessMessageQueue.empty();
+    inFlightChainedCountMap.clear();
+    unsetResultMsgMap.clear();
 }
 
 std::vector<std::shared_ptr<Host>> Planner::getAvailableHosts()
@@ -387,6 +404,226 @@ bool Planner::isHostExpired(std::shared_ptr<Host> host, long epochTimeMs)
 
     long hostTimeoutMs = getConfig().hosttimeout() * 1000;
     return (epochTimeMs - host->registerts().epochms()) > hostTimeoutMs;
+}
+
+void Planner::releaseMessageHost(std::shared_ptr<faabric::Message> msg)
+{
+
+    // Remove the message from the in-flight requests if all the messagess are
+    // processed
+
+    int appId = msg->appid();
+    int msgId = msg->id();
+
+    inFlightChainedCountMap[appId]--;
+
+    // If we are dealing with a migrated message, we can ignore the setting
+    // of the message result. This is because the migrated function will
+    // have the same message id, and thus we will call this method again with
+    // a message with the same message id. In addition, all the in-flihght
+    // state is updated accordingly when we schedule the migration
+    bool isMigratedMsg = msg->returnvalue() == MIGRATED_FUNCTION_RETURN_VALUE;
+    if (isMigratedMsg) {
+        return;
+    }
+
+    faabric::util::FullLock lock(plannerMx);
+
+    SPDLOG_DEBUG("Planner setting message result (id: {}) for {}:{}:{}",
+                 msg->id(),
+                 msg->appid(),
+                 msg->groupid(),
+                 msg->groupidx());
+
+    // If we are setting the result for a frozen message, it is important
+    // that we store the message itself in the evicted BER as it contains
+    // information like the function pointer and snapshot key to eventually
+    // un-freeze from. In addition, we want to skip setting the message result
+    // as we will set it when the message finally succeeds
+    bool isFrozenMsg = msg->returnvalue() == FROZEN_FUNCTION_RETURN_VALUE;
+    if (isFrozenMsg) {
+        if (!state.evictedRequests.contains(msg->appid())) {
+            SPDLOG_ERROR("Message {} is frozen but app (id: {}) not in map!",
+                         msg->id(),
+                         msg->appid());
+            throw std::runtime_error("Orphaned frozen message!");
+        }
+
+        auto ber = state.evictedRequests.at(msg->appid());
+        bool found = false;
+        for (int i = 0; i < ber->messages_size(); i++) {
+            if (ber->messages(i).id() == msg->id()) {
+                SPDLOG_DEBUG("Setting message {} in the forzen BER for app {}",
+                             msg->id(),
+                             appId);
+
+                // Propagate the fields that we set during migration
+                ber->mutable_messages(i)->set_funcptr(msg->funcptr());
+                ber->mutable_messages(i)->set_inputdata(msg->inputdata());
+                ber->mutable_messages(i)->set_snapshotkey(msg->snapshotkey());
+                ber->mutable_messages(i)->set_returnvalue(msg->returnvalue());
+
+                found = true;
+                break;
+            }
+        }
+
+        if (!found) {
+            SPDLOG_ERROR(
+              "Error trying to set message {} in the frozen BER for app {}",
+              msg->id(),
+              appId);
+        }
+    }
+
+    // Release the slot only once
+    assert(state.hostMap.contains(msg->executedhost()));
+    if (!state.appResults[appId].contains(msgId) || isFrozenMsg) {
+        releaseHostSlots(state.hostMap.at(msg->executedhost()));
+    }
+
+    // Set the result
+    if (!isFrozenMsg) {
+        state.appResults[appId][msgId] = msg;
+    }
+
+    // Remove the message from the in-flight requests
+    if (!state.inFlightReqs.contains(appId)) {
+        // We don't want to error if any client uses `setMessageResult`
+        // liberally. This means that it may happen that when we set a message
+        // result a second time, the app is already not in-flight
+        SPDLOG_DEBUG("Setting result for non-existant (or finished) app: {}",
+                     appId);
+    } else {
+        auto req = state.inFlightReqs.at(appId).first;
+        auto decision = state.inFlightReqs.at(appId).second;
+
+        // Work out the message position in the BER
+        auto it = std::find_if(
+          req->messages().begin(), req->messages().end(), [&](auto innerMsg) {
+              return innerMsg.id() == msg->id();
+          });
+        if (it == req->messages().end()) {
+            // Ditto as before. We want to allow setting the message result
+            // more than once without breaking
+            SPDLOG_DEBUG("Setting result for non-existant (or finished) "
+                         "message: {} (app: {})",
+                         msg->id(),
+                         appId);
+        } else {
+            SPDLOG_DEBUG("Removing message {} from app {}", msg->id(), appId);
+
+            // Remove message from in-flight requests
+            req->mutable_messages()->erase(it);
+
+            // Remove message from decision
+            int freedMpiPort = decision->removeMessage(msg->id());
+            releaseHostMpiPort(state.hostMap.at(msg->executedhost()),
+                               freedMpiPort);
+
+            // Remove pair altogether if no more messages left
+            if (inFlightChainedCountMap[appId] == 0 && req->messages_size() == 0) {
+                SPDLOG_INFO("Planner removing app {} from in-flight", appId);
+                assert(decision->nFunctions == 0);
+                assert(decision->hosts.empty());
+                assert(decision->messageIds.empty());
+                assert(decision->appIdxs.empty());
+                assert(decision->groupIdxs.empty());
+                assert(decision->mpiPorts.empty());
+                state.inFlightReqs.erase(appId);
+
+                // If we are removing the app from in-flight, we can also
+                // remmove any pre-loaded scheduling decisions
+                if (state.preloadedSchedulingDecisions.contains(appId)) {
+                    SPDLOG_DEBUG(
+                      "Removing preloaded scheduling decision for app {}",
+                      appId);
+                    state.preloadedSchedulingDecisions.erase(appId);
+                }
+            }
+        }
+    }
+
+    // When setting a frozen's message result, we can skip notifying waiting
+    // hosts
+    if (isFrozenMsg) {
+        return;
+    }
+
+    // Finally, dispatch an async message to all hosts that are waiting once
+    // all planner accounting is updated
+    if (state.appResultWaiters.find(msgId) != state.appResultWaiters.end()) {
+        for (const auto& host : state.appResultWaiters[msgId]) {
+            SPDLOG_DEBUG("Sending result to waiting host: {}", host);
+            faabric::scheduler::getFunctionCallClient(host)->setMessageResult(
+              msg);
+        }
+    }
+    
+}
+
+void Planner::removeInflightMessage(std::shared_ptr<faabric::Message> msg)
+{
+    // It is only called by releaseMessageHost so we don't need to lock
+
+    int appId = msg->appid();
+
+    // Remove the message from the in-flight requests
+    if (!state.inFlightReqs.contains(appId)) {
+        // We don't want to error if any client uses `setMessageResult`
+        // liberally. This means that it may happen that when we set a message
+        // result a second time, the app is already not in-flight
+        SPDLOG_DEBUG("Setting result for non-existant (or finished) app: {}",
+                     appId);
+    } else {
+        auto req = state.inFlightReqs.at(appId).first;
+        auto decision = state.inFlightReqs.at(appId).second;
+
+        // Work out the message position in the BER
+        auto it = std::find_if(
+          req->messages().begin(), req->messages().end(), [&](auto innerMsg) {
+              return innerMsg.id() == msg->id();
+          });
+        if (it == req->messages().end()) {
+            // Ditto as before. We want to allow setting the message result
+            // more than once without breaking
+            SPDLOG_DEBUG("Setting result for non-existant (or finished) "
+                         "message: {} (app: {})",
+                         msg->id(),
+                         appId);
+        } else {
+            SPDLOG_DEBUG("Removing message {} from app {}", msg->id(), appId);
+
+            // Remove message from in-flight requests
+            req->mutable_messages()->erase(it);
+
+            // Remove message from decision
+            int freedMpiPort = decision->removeMessage(msg->id());
+            releaseHostMpiPort(state.hostMap.at(msg->executedhost()),
+                               freedMpiPort);
+
+            // Remove pair altogether if no more messages left
+            if (req->messages_size() == 0) {
+                SPDLOG_INFO("Planner removing app {} from in-flight", appId);
+                assert(decision->nFunctions == 0);
+                assert(decision->hosts.empty());
+                assert(decision->messageIds.empty());
+                assert(decision->appIdxs.empty());
+                assert(decision->groupIdxs.empty());
+                assert(decision->mpiPorts.empty());
+                state.inFlightReqs.erase(appId);
+
+                // If we are removing the app from in-flight, we can also
+                // remmove any pre-loaded scheduling decisions
+                if (state.preloadedSchedulingDecisions.contains(appId)) {
+                    SPDLOG_DEBUG(
+                      "Removing preloaded scheduling decision for app {}",
+                      appId);
+                    state.preloadedSchedulingDecisions.erase(appId);
+                }
+            }
+        }
+    }
 }
 
 void Planner::setMessageResult(std::shared_ptr<faabric::Message> msg)
@@ -1403,6 +1640,42 @@ void Planner::setNextEvictedVm(const std::set<std::string>& vmIps)
     }
 
     state.nextEvictedHostIps = vmIps;
+}
+
+std::shared_ptr<faabric::batch_scheduler::SchedulingDecision>
+Planner::enqueueRequest(std::shared_ptr<BatchExecuteRequest> req, bool force)
+{
+    faabric::util::FullLock lock(plannerMx);
+
+    // TODO - the size can be change by the user
+    if (!force && unprocessMessageQueue.size() > 100) {
+        return std::make_shared<faabric::batch_scheduler::SchedulingDecision>(
+          NOT_ENOUGH_SLOTS_DECISION);
+    }
+
+    unprocessMessageQueue.enqueue(req);
+
+    int appId = req->appid();
+    // Add it to the in-flight map
+    inFlightChainedCountMap[appId] += 1;
+
+    return std::make_shared<faabric::batch_scheduler::SchedulingDecision>(appId,
+                                                                          0);
+}
+
+void Planner::scheduleTimerCheck()
+{
+    while (!stopBatchTimer) {
+        // If empty, this thread will be blocked.
+        std::shared_ptr<BatchExecuteRequest> req = unprocessMessageQueue.front();
+        auto decision = getPlanner().callBatch(req);
+
+        if (*decision == NOT_ENOUGH_SLOTS_DECISION) {
+            std::this_thread::sleep_for(std::chrono::milliseconds(100));
+        } else {
+            unprocessMessageQueue.dequeue();
+        }
+    }
 }
 
 Planner& getPlanner()

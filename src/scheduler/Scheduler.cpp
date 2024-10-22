@@ -340,7 +340,7 @@ std::shared_ptr<faabric::executor::Executor> Scheduler::claimExecutor(
   faabric::Message& msg,
   faabric::util::FullLock& schedulerLock)
 {
-    std::string funcStr = faabric::util::funcToString(msg, true);
+    std::string funcStr = faabric::util::funcToString(msg, false);
 
     std::vector<std::shared_ptr<faabric::executor::Executor>>& thisExecutors =
       executors[funcStr];
