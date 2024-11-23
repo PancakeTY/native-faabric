@@ -13,7 +13,8 @@
 
 #ifdef NDEBUG
 // Allow info and up in release build
-#define SPDLOG_ACTIVE_LEVEL 2
+// Some bugs only happen in K8s environment, so we need to keep debug level
+#define SPDLOG_ACTIVE_LEVEL 0
 #else
 // Allow all levels in debug build
 #define SPDLOG_ACTIVE_LEVEL 0
