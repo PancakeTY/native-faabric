@@ -2,6 +2,7 @@
 #include <faabric/batch-scheduler/BinPackScheduler.h>
 #include <faabric/batch-scheduler/CompactScheduler.h>
 #include <faabric/batch-scheduler/SpotScheduler.h>
+#include <faabric/batch-scheduler/RoundRobinScheduler.h>
 #include <faabric/util/config.h>
 #include <faabric/util/logging.h>
 
@@ -26,6 +27,8 @@ std::shared_ptr<BatchScheduler> getBatchScheduler()
         batchScheduler = std::make_shared<CompactScheduler>();
     } else if (mode == "spot") {
         batchScheduler = std::make_shared<SpotScheduler>();
+    } else if (mode == "roundrobin"){
+        batchScheduler = std::make_shared<RoundRobinScheduler>();
     } else {
         SPDLOG_ERROR("Unrecognised batch scheduler mode: {}", mode);
         throw std::runtime_error("Unrecognised batch scheduler mode");

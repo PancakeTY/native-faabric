@@ -8,6 +8,7 @@ faabric_lib(batch_scheduler
     BinPackScheduler.cpp
     CompactScheduler.cpp
     SpotScheduler.cpp
+    RoundRobinScheduler.cpp
 )
 
 target_link_libraries(batch_scheduler PRIVATE
